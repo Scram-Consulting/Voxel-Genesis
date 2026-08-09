@@ -7,7 +7,9 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <io.h>     // _dup2/_fileno (redirección de logs)
+#include <io.h>       // _dup2/_fileno (redirección de logs), _write/_open (crash marker)
+#include <fcntl.h>    // _O_CREAT/_O_WRONLY (crash marker)
+#include <sys/stat.h> // _S_IREAD/_S_IWRITE (crash marker)
 #include <gl/GL.h>
 #include <mmsystem.h>
 #pragma comment(lib, "opengl32.lib")
@@ -232,6 +234,10 @@ enum BlockType {
     BLOCK_RAW_ZINC,       // Zinc crudo - dropea del desecho de metales
     BLOCK_RAW_COPPER      // Cobre crudo - dropea del desecho de metales
 };
+
+// Último valor válido del enum: usado para validar datos leídos de archivos.
+// ⚠️ Actualizar si se añaden bloques al final del enum.
+constexpr int BLOCK_TYPE_MAX = BLOCK_RAW_COPPER;
 
 // ============================================================================
 // SISTEMA DE RAREZA DE MINERALES
@@ -3301,6 +3307,9 @@ private:
             chunk->needsRebuild = true;
             chunk->isGenerated = false;
             chunk->isModified = false;
+            chunk->needsLightUpdate = false;
+            chunk->waitingForNeighbors = false;
+            chunk->buildRetries = 0;
 
             // Limpiar datos anteriores
             for (int x = 0; x < CHUNK_SIZE; x++) {
@@ -3309,6 +3318,15 @@ private:
                         chunk->blocks[x][y][z] = BLOCK_AIR;
                     }
                 }
+            }
+
+            // ⭐ FIX CRÍTICO: reinicializar también la paleta (subchunks).
+            // getBlock() lee de subchunks; si conservan los bloques del chunk
+            // anterior, setBlock() hace early-return al "no cambiar" el valor
+            // y el chunk regenerado puede guardarse como aire en disco.
+            chunk->subchunks.clear();
+            for (int i = 0; i < SUBCHUNKS_PER_CHUNK; i++) {
+                chunk->subchunks.emplace_back(static_cast<BlockType>(BLOCK_AIR));
             }
 
             return chunk;
@@ -7256,7 +7274,10 @@ public:
             std::string filename = "chunk_" + std::to_string(chunk->position.x) + "_" + std::to_string(chunk->position.z) + ".dat";
             std::filesystem::path chunkPath = chunksDir / filename;
 
-            std::ofstream file(chunkPath, std::ios::binary);
+            // Escritura atómica: tmp + rename (un crash a media escritura ya
+            // no deja el chunk truncado en disco)
+            std::filesystem::path chunkTmpPath = chunksDir / (filename + ".tmp");
+            std::ofstream file(chunkTmpPath, std::ios::binary);
             if (!file.is_open()) {
                 std::cerr << "❌ ERROR: No se pudo abrir " << filename << " para guardar" << std::endl;
                 return;
@@ -7268,7 +7289,24 @@ public:
             // ⭐ IMPORTANTE: Guardar TODOS los bloques del chunk
             file.write((char*)chunk->blocks, sizeof(BlockType) * CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE);
 
+            bool writeOk = file.good();
             file.close();
+
+            if (writeOk) {
+                std::error_code ec;
+                std::filesystem::rename(chunkTmpPath, chunkPath, ec);
+                if (ec) {
+                    std::filesystem::remove(chunkPath, ec);
+                    std::filesystem::rename(chunkTmpPath, chunkPath, ec);
+                }
+                if (ec) {
+                    std::cerr << "❌ ERROR al renombrar " << filename << ".tmp: " << ec.message() << std::endl;
+                }
+            } else {
+                std::error_code ec;
+                std::filesystem::remove(chunkTmpPath, ec);
+                std::cerr << "❌ ERROR de escritura en " << filename << std::endl;
+            }
         } catch (const std::exception& e) {
             std::cerr << "⚠️ Error al guardar chunk (" << chunk->position.x << ", " << chunk->position.z << "): " << e.what() << std::endl;
         } catch (...) {
@@ -13891,8 +13929,10 @@ std::string formatTimestamp(long long timestamp) {
 // ⭐⭐⭐ GUARDAR LEVEL.DAT (Como Minecraft pero mejorado con formato de texto) ⭐⭐⭐
 void saveLevelDat(const std::string& worldPath, const WorldInfo& worldInfo, float sessionPlaytime) {
     std::filesystem::path levelPath = std::filesystem::path(worldPath) / "level.dat";
+    std::filesystem::path levelTmpPath = std::filesystem::path(worldPath) / "level.dat.tmp";
 
-    std::ofstream file(levelPath);
+    // Escritura atómica: tmp + rename (level.dat nunca queda a medio escribir)
+    std::ofstream file(levelTmpPath);
     if (!file.is_open()) {
         std::cerr << "❌ Error al guardar level.dat" << std::endl;
         return;
@@ -13938,7 +13978,24 @@ void saveLevelDat(const std::string& worldPath, const WorldInfo& worldInfo, floa
     file << "# Checksum (para validación de integridad)\n";
     file << "Checksum=0xVOXELWORLD\n";
 
+    bool writeOk = file.good();
     file.close();
+
+    if (writeOk) {
+        std::error_code ec;
+        std::filesystem::rename(levelTmpPath, levelPath, ec);
+        if (ec) {
+            std::filesystem::remove(levelPath, ec);
+            std::filesystem::rename(levelTmpPath, levelPath, ec);
+        }
+        if (ec) {
+            std::cerr << "❌ Error al renombrar level.dat.tmp: " << ec.message() << std::endl;
+        }
+    } else {
+        std::error_code ec;
+        std::filesystem::remove(levelTmpPath, ec);
+        std::cerr << "❌ Error de escritura en level.dat" << std::endl;
+    }
 
     // ⭐ Guardado silencioso - no molestar la vista del jugador
     // std::cout << "   ✅ level.dat guardado (Tamaño: " << formatFileSize(worldSize)
@@ -13973,31 +14030,40 @@ bool loadLevelDat(const std::string& worldPath, WorldInfo& worldInfo) {
         std::string key = line.substr(0, pos);
         std::string value = line.substr(pos + 1);
 
-        // Parsear cada campo
-        if (key == "LevelName") {
-            worldInfo.name = value;
-        } else if (key == "RandomSeed") {
-            worldInfo.seed = (unsigned int)std::stoul(value);
-        } else if (key == "CreationDate") {
-            worldInfo.creationDate = std::stoll(value);
-        } else if (key == "LastPlayed") {
-            worldInfo.lastPlayed = std::stoll(value);
-        } else if (key == "TotalPlaytime") {
-            worldInfo.totalPlaytime = std::stof(value);
-        } else if (key == "SizeOnDisk") {
-            worldInfo.worldSizeBytes = std::stoll(value);
-        } else if (key == "GameMode") {
-            worldInfo.gameMode = std::stoi(value);
-        } else if (key == "SpawnX") {
-            worldInfo.spawnX = std::stoi(value);
-        } else if (key == "SpawnY") {
-            worldInfo.spawnY = std::stoi(value);
-        } else if (key == "SpawnZ") {
-            worldInfo.spawnZ = std::stoi(value);
-        } else if (key == "VersionCreated") {
-            worldInfo.versionCreated = value;
-        } else if (key == "Checksum") {
-            validChecksum = (value == "0xVOXELWORLD");
+        // ⭐ std::sto* lanza con valores vacíos/no numéricos: un level.dat
+        // corrupto NO debe tirar la aplicación (esto se llama desde el menú
+        // de selección de mundos, fuera del try/catch del juego). El campo
+        // ilegible se ignora y se conserva el valor por defecto.
+        try {
+            // Parsear cada campo
+            if (key == "LevelName") {
+                worldInfo.name = value;
+            } else if (key == "RandomSeed") {
+                worldInfo.seed = (unsigned int)std::stoul(value);
+            } else if (key == "CreationDate") {
+                worldInfo.creationDate = std::stoll(value);
+            } else if (key == "LastPlayed") {
+                worldInfo.lastPlayed = std::stoll(value);
+            } else if (key == "TotalPlaytime") {
+                worldInfo.totalPlaytime = std::stof(value);
+            } else if (key == "SizeOnDisk") {
+                worldInfo.worldSizeBytes = std::stoll(value);
+            } else if (key == "GameMode") {
+                worldInfo.gameMode = std::stoi(value);
+            } else if (key == "SpawnX") {
+                worldInfo.spawnX = std::stoi(value);
+            } else if (key == "SpawnY") {
+                worldInfo.spawnY = std::stoi(value);
+            } else if (key == "SpawnZ") {
+                worldInfo.spawnZ = std::stoi(value);
+            } else if (key == "VersionCreated") {
+                worldInfo.versionCreated = value;
+            } else if (key == "Checksum") {
+                validChecksum = (value == "0xVOXELWORLD");
+            }
+        } catch (const std::exception&) {
+            std::cerr << "⚠️ level.dat: campo ilegible '" << key << "=" << value
+                      << "' en " << worldPath << " (ignorado)" << std::endl;
         }
     }
 
@@ -14027,10 +14093,17 @@ void saveWorld(GameState* state) {
     std::filesystem::path worldPath = std::filesystem::path("saves") / state->currentWorldName;
     std::filesystem::create_directories(worldPath);
 
-    // ⭐ PASO 1: Guardar datos del jugador
+    // ⭐ Crear save.lock AL INICIO: si el proceso muere a media escritura, el
+    // lock queda en disco y la próxima carga puede avisar de posible corrupción.
+    // (Antes solo se borraba al final: nunca detectaba nada.)
+    std::filesystem::path lockPath = worldPath / "save.lock";
+    { std::ofstream lockFile(lockPath); lockFile << "saving"; }
+
+    // ⭐ PASO 1: Guardar datos del jugador (escritura atómica: tmp + rename)
     std::cout << "📍 Guardando jugador..." << std::endl;
     std::filesystem::path playerPath = worldPath / "player.dat";
-    std::ofstream playerFile(playerPath, std::ios::binary);
+    std::filesystem::path playerTmpPath = worldPath / "player.dat.tmp";
+    std::ofstream playerFile(playerTmpPath, std::ios::binary);
     if (playerFile.is_open()) {
         // HEADER para validación
         const char header[4] = {'P', 'L', 'Y', 'R'};
@@ -14067,11 +14140,32 @@ void saveWorld(GameState* state) {
         uint32_t checksum = 0xDEADBEEF;  // Simple checksum
         playerFile.write(reinterpret_cast<const char*>(&checksum), sizeof(uint32_t));
 
+        bool writeOk = playerFile.good();
         playerFile.close();
-        std::cout << "   ✅ Jugador guardado (Pos: "
-                  << (int)state->player.position.x << ", "
-                  << (int)state->player.position.y << ", "
-                  << (int)state->player.position.z << ")" << std::endl;
+
+        // ⭐ Rename atómico: player.dat nunca queda a medio escribir. Si el
+        // proceso muere durante la escritura, solo se pierde el .tmp.
+        if (writeOk) {
+            std::error_code ec;
+            std::filesystem::rename(playerTmpPath, playerPath, ec);
+            if (ec) {
+                // En Windows rename falla si el destino existe y está bloqueado
+                std::filesystem::remove(playerPath, ec);
+                std::filesystem::rename(playerTmpPath, playerPath, ec);
+            }
+            if (ec) {
+                std::cerr << "   ❌ Error al renombrar player.dat.tmp: " << ec.message() << std::endl;
+            } else {
+                std::cout << "   ✅ Jugador guardado (Pos: "
+                          << (int)state->player.position.x << ", "
+                          << (int)state->player.position.y << ", "
+                          << (int)state->player.position.z << ")" << std::endl;
+            }
+        } else {
+            std::error_code ec;
+            std::filesystem::remove(playerTmpPath, ec);
+            std::cerr << "   ❌ Error de escritura en player.dat (disco lleno?)" << std::endl;
+        }
     } else {
         std::cerr << "   ❌ Error al guardar jugador" << std::endl;
     }
@@ -14101,10 +14195,9 @@ void saveWorld(GameState* state) {
     std::cout << "🗺️ Guardando chunks..." << std::endl;
     state->world.saveWorld(worldPath.string());
 
-    // ⭐ PASO 4: Crear archivo de lock para prevenir corrupción
-    std::filesystem::path lockPath = worldPath / "save.lock";
+    // ⭐ PASO 4: Guardado completo — retirar el lock creado al inicio
     if (std::filesystem::exists(lockPath)) {
-        std::filesystem::remove(lockPath);  // Remover lock anterior
+        std::filesystem::remove(lockPath);
     }
 
     // ⭐ PASO 5: Actualizar timestamp en la lista de mundos
@@ -14198,9 +14291,13 @@ bool loadWorldData(GameState* state, const std::string& worldName) {
             std::string line;
             while (std::getline(cfgFile, line)) {
                 if (line.find("seed=") == 0) {
-                    int savedSeed = std::stoi(line.substr(5));
-                    state->world.setSeed(savedSeed);
-                    std::cout << "   ✅ Semilla cargada desde world.cfg: " << savedSeed << std::endl;
+                    try {
+                        int savedSeed = std::stoi(line.substr(5));
+                        state->world.setSeed(savedSeed);
+                        std::cout << "   ✅ Semilla cargada desde world.cfg: " << savedSeed << std::endl;
+                    } catch (const std::exception&) {
+                        std::cerr << "   ⚠️ world.cfg: semilla ilegible (se usará la actual)" << std::endl;
+                    }
                     break;
                 }
             }
@@ -14215,12 +14312,16 @@ bool loadWorldData(GameState* state, const std::string& worldName) {
         std::ifstream cfgFile(worldCfgPath);
         std::string line;
         while (std::getline(cfgFile, line)) {
-            if (line.find("render_distance=") == 0) {
-                state->renderDistance = std::stoi(line.substr(16));
-            }
-            else if (line.find("last_save=") == 0) {
-                time_t lastSave = std::stoll(line.substr(10));
-                std::cout << "   Último guardado: " << ctime(&lastSave);
+            try {
+                if (line.find("render_distance=") == 0) {
+                    state->renderDistance = std::stoi(line.substr(16));
+                }
+                else if (line.find("last_save=") == 0) {
+                    time_t lastSave = std::stoll(line.substr(10));
+                    std::cout << "   Último guardado: " << ctime(&lastSave);
+                }
+            } catch (const std::exception&) {
+                std::cerr << "   ⚠️ world.cfg: línea ilegible ignorada: " << line << std::endl;
             }
         }
         cfgFile.close();
@@ -14253,40 +14354,85 @@ bool loadWorldData(GameState* state, const std::string& worldName) {
                 return false;
             }
 
-            // Posición
-            playerFile.read(reinterpret_cast<char*>(&state->player.position.x), sizeof(float));
-            playerFile.read(reinterpret_cast<char*>(&state->player.position.y), sizeof(float));
-            playerFile.read(reinterpret_cast<char*>(&state->player.position.z), sizeof(float));
+            // ⭐ VALIDACIÓN: leer TODO a variables locales, comprobar el estado
+            // del stream y los rangos, y solo entonces aplicar al estado del
+            // juego. Antes, un player.dat truncado dejaba posición/velocidad
+            // sin inicializar (UB) y aun así se usaban.
+            float px, py, pz, yaw, pitch, vx, vy, vz;
+            bool onGround;
+            playerFile.read(reinterpret_cast<char*>(&px), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&py), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&pz), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&yaw), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&pitch), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&vx), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&vy), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&vz), sizeof(float));
+            playerFile.read(reinterpret_cast<char*>(&onGround), sizeof(bool));
 
-            // Rotación
-            playerFile.read(reinterpret_cast<char*>(&state->player.yaw), sizeof(float));
-            playerFile.read(reinterpret_cast<char*>(&state->player.pitch), sizeof(float));
-
-            // Velocidad
-            playerFile.read(reinterpret_cast<char*>(&state->player.velocity.x), sizeof(float));
-            playerFile.read(reinterpret_cast<char*>(&state->player.velocity.y), sizeof(float));
-            playerFile.read(reinterpret_cast<char*>(&state->player.velocity.z), sizeof(float));
-
-            // Estados booleanos
-            playerFile.read(reinterpret_cast<char*>(&state->player.onGround), sizeof(bool));
-
-            // Inventario (TODOS los 45 slots)
+            // Inventario (TODOS los 45 slots) a buffer local
+            int invBlockType[Inventory::SLOTS];
+            int invCount[Inventory::SLOTS];
             for (int i = 0; i < Inventory::SLOTS; i++) {
-                int blockType;
-                playerFile.read(reinterpret_cast<char*>(&blockType), sizeof(int));
-                playerFile.read(reinterpret_cast<char*>(&state->inventory.slots[i].count), sizeof(int));
-                state->inventory.slots[i].blockType = static_cast<BlockType>(blockType);
+                playerFile.read(reinterpret_cast<char*>(&invBlockType[i]), sizeof(int));
+                playerFile.read(reinterpret_cast<char*>(&invCount[i]), sizeof(int));
             }
-            playerFile.read(reinterpret_cast<char*>(&state->inventory.selectedSlot), sizeof(int));
+            int selectedSlot = 0;
+            playerFile.read(reinterpret_cast<char*>(&selectedSlot), sizeof(int));
 
-            // Validar CHECKSUM
-            uint32_t checksum;
+            uint32_t checksum = 0;
             playerFile.read(reinterpret_cast<char*>(&checksum), sizeof(uint32_t));
+
+            // ⭐ Archivo truncado = stream en fallo: rechazar el archivo entero
+            if (!playerFile.good() && !playerFile.eof()) {
+                std::cerr << "   ❌ ERROR: player.dat truncado o ilegible" << std::endl;
+                playerFile.close();
+                return false;
+            }
+            if (playerFile.fail() && !playerFile.bad()) {
+                // fail sin bad tras las reads = datos incompletos
+                std::cerr << "   ❌ ERROR: player.dat incompleto (faltan datos)" << std::endl;
+                playerFile.close();
+                return false;
+            }
+            playerFile.close();
+
             if (checksum != 0xDEADBEEF) {
                 std::cerr << "   ⚠️ ADVERTENCIA: Checksum inválido (el archivo podría estar corrupto)" << std::endl;
             }
 
-            playerFile.close();
+            // ⭐ Rechazar floats no finitos (NaN/Inf rompen la física)
+            if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz) ||
+                !std::isfinite(yaw) || !std::isfinite(pitch) ||
+                !std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz)) {
+                std::cerr << "   ❌ ERROR: player.dat con valores no finitos (NaN/Inf)" << std::endl;
+                return false;
+            }
+
+            // Aplicar al estado, con rangos acotados
+            state->player.position = Vec3(px, py, pz);
+            state->player.yaw = yaw;
+            state->player.pitch = pitch;
+            state->player.velocity = Vec3(vx, vy, vz);
+            state->player.onGround = onGround;
+
+            for (int i = 0; i < Inventory::SLOTS; i++) {
+                int bt = invBlockType[i];
+                int count = invCount[i];
+                // Bloque fuera del enum o cantidad inválida → slot vacío
+                if (bt < 0 || bt > BLOCK_TYPE_MAX || count <= 0) {
+                    bt = BLOCK_AIR;
+                    count = 0;
+                } else if (count > 100) {
+                    count = 100;  // límite de stack del juego
+                }
+                state->inventory.slots[i].blockType = static_cast<BlockType>(bt);
+                state->inventory.slots[i].count = count;
+            }
+            if (selectedSlot < 0 || selectedSlot >= Inventory::SLOTS) {
+                selectedSlot = 0;
+            }
+            state->inventory.selectedSlot = selectedSlot;
 
             // ⭐ PROTECCIÓN ANTI-VOID: Validar posición Y cargada
             if (state->player.position.y < 5.0f || state->player.position.y > 250.0f) {
@@ -14358,54 +14504,56 @@ bool loadWorldData(GameState* state, const std::string& worldName) {
 // SIGNAL HANDLERS PARA GUARDADO DE EMERGENCIA
 // ============================================================================
 
+// Marcador de crash: descriptor abierto al arrancar para que el handler solo
+// necesite _write() (async-signal-safe). El handler anterior llamaba a
+// saveWorld() completo (filesystem, ofstream, mutexes, heap) desde SIGSEGV:
+// podía colgarse en un lock o sobrescribir un save bueno con memoria corrupta.
+static int g_crashMarkerFd = -1;
+static std::string g_crashMarkerPath;
+
 void emergencySaveHandler(int signal) {
-    std::cerr << "\n╔════════════════════════════════════════╗" << std::endl;
-    std::cerr << "║  ⚠️ SEÑAL DE CRASH DETECTADA (";
-
-    switch(signal) {
-        case SIGSEGV: std::cerr << "SIGSEGV"; break;
-        case SIGABRT: std::cerr << "SIGABRT"; break;
-        case SIGILL:  std::cerr << "SIGILL";  break;
-        case SIGFPE:  std::cerr << "SIGFPE";  break;
-        case SIGINT:  std::cerr << "SIGINT";  break;
-        case SIGTERM: std::cerr << "SIGTERM"; break;
-        default:      std::cerr << "SIGNAL " << signal; break;
+    // ⚠️ Contexto de señal: SOLO operaciones async-signal-safe.
+    if (g_crashMarkerFd >= 0) {
+        _write(g_crashMarkerFd, "CRASH\n", 6);
+        _commit(g_crashMarkerFd);
     }
-
-    std::cerr << ")    ║" << std::endl;
-    std::cerr << "╚════════════════════════════════════════╝" << std::endl;
-
-    // Intentar guardar el mundo
-    if (g_gameState && !g_gameState->currentWorldName.empty()) {
-        std::cerr << "\n💾 Intentando guardado de emergencia..." << std::endl;
-        try {
-            saveWorld(g_gameState);
-            std::cerr << "✅ Mundo guardado exitosamente antes del crash!" << std::endl;
-        } catch (...) {
-            std::cerr << "❌ No se pudo guardar el mundo" << std::endl;
-        }
-    } else {
-        std::cerr << "⚠️ No hay mundo activo para guardar" << std::endl;
-    }
-
-    std::cerr << "\n🔴 El programa se cerrará ahora..." << std::endl;
-
     // Restaurar el handler por defecto y re-raise la señal
     std::signal(signal, SIG_DFL);
     std::raise(signal);
 }
 
 void setupSignalHandlers() {
-    std::cout << "🛡️ Instalando signal handlers para guardado de emergencia..." << std::endl;
+    namespace fs = std::filesystem;
+    const char* localAppData = getenv("LOCALAPPDATA");
+    fs::path dir = (localAppData && *localAppData)
+        ? fs::path(localAppData) / "VoxelGenesis"
+        : fs::path(getExeDir()) / "logs";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::path markerPath = dir / "crash.marker";
 
+    // ¿Quedó marcador de la sesión anterior? → hubo crash
+    if (fs::exists(markerPath, ec) && fs::file_size(markerPath, ec) > 0) {
+        std::cerr << "⚠️ Se detectó un cierre inesperado en la sesión anterior" << std::endl;
+        MessageBoxA(nullptr,
+                    "VoxelWorld se cerró inesperadamente la última vez.\n\n"
+                    "El progreso desde el último autoguardado podría haberse perdido.\n"
+                    "Hay backups en saves\\<mundo>\\backups\\.",
+                    "VoxelWorld - Aviso", MB_OK | MB_ICONWARNING);
+    }
+
+    g_crashMarkerPath = markerPath.string();
+    g_crashMarkerFd = _open(g_crashMarkerPath.c_str(),
+                            _O_CREAT | _O_WRONLY | _O_TRUNC, _S_IREAD | _S_IWRITE);
+
+    // Solo señales de crash real. SIGINT/SIGTERM quedan con el comportamiento
+    // por defecto: el guardado normal lo cubren el autosave y el cierre limpio.
     std::signal(SIGSEGV, emergencySaveHandler);  // Segmentation fault
     std::signal(SIGABRT, emergencySaveHandler);  // Abort
     std::signal(SIGILL,  emergencySaveHandler);  // Illegal instruction
     std::signal(SIGFPE,  emergencySaveHandler);  // Floating point exception
-    std::signal(SIGINT,  emergencySaveHandler);  // Interrupt (Ctrl+C)
-    std::signal(SIGTERM, emergencySaveHandler);  // Termination request
 
-    std::cout << "✅ Signal handlers instalados correctamente" << std::endl;
+    std::cout << "🛡️ Detector de crashes instalado (marcador: " << g_crashMarkerPath << ")" << std::endl;
 }
 
 // ============================================================================
@@ -16404,6 +16552,16 @@ int main() {
 
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    // Cierre limpio: retirar el marcador de crash
+    if (g_crashMarkerFd >= 0) {
+        _close(g_crashMarkerFd);
+        g_crashMarkerFd = -1;
+    }
+    if (!g_crashMarkerPath.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(g_crashMarkerPath, ec);
+    }
 
     std::cout << "Juego cerrado correctamente!" << std::endl;
 
