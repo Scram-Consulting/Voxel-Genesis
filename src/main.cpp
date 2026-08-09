@@ -3069,6 +3069,9 @@ private:
 // CLASE WORLD - GESTION DE CHUNKS Y GENERACION PROCEDURAL
 // ============================================================================
 
+// Flag de --verify-gen: ver "VERIFICACIÓN DE GENERACIÓN" en World::generateChunk
+static bool g_verifyGen = false;
+
 class World {
 private:
     std::map<Vec3i, Chunk*> chunks;
@@ -3622,22 +3625,46 @@ public:
         // ========================================================================
         _gsec.mark("gen:01-terrain");
 
+        // ⭐ CACHE DE BIOMAS
+        // Cada columna muestrea el bioma en su centro y en 4 vecinos a ±8
+        // bloques. Como las muestras caen en la misma rejilla entera, la de una
+        // columna coincide con la de otra: sin cache son 5*256 = 1280 llamadas
+        // por chunk (unas 22 evaluaciones de ruido cada una) para solo 768
+        // puntos distintos. La cache cubre [-8, CHUNK_SIZE+8) en X y Z.
+        const int SAMPLE_DIST_I = 8;
+        const int BIOME_CACHE_DIM = CHUNK_SIZE + 2 * SAMPLE_DIST_I;   // 32
+        const int baseX = chunk->position.x * CHUNK_SIZE;
+        const int baseZ = chunk->position.z * CHUNK_SIZE;
+
+        std::vector<BiomeData> biomeCache(BIOME_CACHE_DIM * BIOME_CACHE_DIM);
+        std::vector<char> biomeCached(BIOME_CACHE_DIM * BIOME_CACHE_DIM, 0);
+
+        auto biomeAt = [&](int wx, int wz) -> const BiomeData& {
+            int lx = wx - baseX + SAMPLE_DIST_I;
+            int lz = wz - baseZ + SAMPLE_DIST_I;
+            int idx = lz * BIOME_CACHE_DIM + lx;
+            if (!biomeCached[idx]) {
+                biomeCache[idx] = terrainGen->getBiomeData((float)wx, (float)wz, SEA_LEVEL);
+                biomeCached[idx] = 1;
+            }
+            return biomeCache[idx];
+        };
+
         // Generate terrain using hierarchical layer system
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
-                int worldX = chunk->position.x * CHUNK_SIZE + x;
-                int worldZ = chunk->position.z * CHUNK_SIZE + z;
+                int worldX = baseX + x;
+                int worldZ = baseZ + z;
 
                 // LAYER 1-6: Get biome data (Continental, Temperature, Humidity, Erosion, Peaks, Biome Type)
                 // ⭐⭐⭐ MEJORADO: Sample múltiples puntos para interpolación suave (elimina cortes)
-                BiomeData biomeCenter = terrainGen->getBiomeData((float)worldX, (float)worldZ, SEA_LEVEL);
+                const BiomeData& biomeCenter = biomeAt(worldX, worldZ);
 
                 // Sample biomas vecinos para transición ultra-suave
-                const float SAMPLE_DIST = 8.0f;  // Distancia de sampling
-                BiomeData biomeN = terrainGen->getBiomeData((float)worldX, (float)worldZ + SAMPLE_DIST, SEA_LEVEL);
-                BiomeData biomeS = terrainGen->getBiomeData((float)worldX, (float)worldZ - SAMPLE_DIST, SEA_LEVEL);
-                BiomeData biomeE = terrainGen->getBiomeData((float)worldX + SAMPLE_DIST, (float)worldZ, SEA_LEVEL);
-                BiomeData biomeW = terrainGen->getBiomeData((float)worldX - SAMPLE_DIST, (float)worldZ, SEA_LEVEL);
+                const BiomeData& biomeN = biomeAt(worldX, worldZ + SAMPLE_DIST_I);
+                const BiomeData& biomeS = biomeAt(worldX, worldZ - SAMPLE_DIST_I);
+                const BiomeData& biomeE = biomeAt(worldX + SAMPLE_DIST_I, worldZ);
+                const BiomeData& biomeW = biomeAt(worldX - SAMPLE_DIST_I, worldZ);
 
                 // Interpolar parámetros con vecinos (50% centro, 50% vecinos promediados)
                 BiomeData biome = biomeCenter;  // Mantener biome type del centro
@@ -4798,6 +4825,17 @@ public:
         }
 
         chunk->isGenerated = true;
+
+        // ⭐ VERIFICACIÓN DE GENERACIÓN (--verify-gen): huella del contenido del
+        // chunk. Permite comprobar que una optimización de la generación produce
+        // exactamente el mismo terreno: se compara el log antes y después.
+        if (g_verifyGen) {
+            uint32_t crc = VoxelWorld::SaveSystem::CompressionSystem::calculateCRC32(
+                reinterpret_cast<const uint8_t*>(chunk->blocks), sizeof(chunk->blocks));
+            std::cout << "[GENHASH] chunk " << chunk->position.x << "," << chunk->position.z
+                      << " crc=" << std::hex << crc << std::dec << std::endl;
+        }
+
         // chunk->needsLightUpdate = true;  // DESHABILITADO PARA 60 FPS
         // queueChunkForLighting(chunk->position);  // DESHABILITADO
         chunk->needsRebuild = true;
@@ -14199,6 +14237,7 @@ void setupSignalHandlers() {
 static bool g_benchmarkMode = false;
 static double g_benchmarkSeconds = 30.0;
 static double g_benchInGameStart = -1.0;
+static int g_forcedSeed = -1;   // --seed: mundo reproducible para comparar runs
 
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
@@ -14208,6 +14247,12 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) {
                 try { g_benchmarkSeconds = std::stod(argv[++i]); } catch (...) {}
             }
+        } else if (arg == "--seed") {
+            if (i + 1 < argc) {
+                try { g_forcedSeed = std::stoi(argv[++i]); } catch (...) {}
+            }
+        } else if (arg == "--verify-gen") {
+            g_verifyGen = true;
         }
     }
 
@@ -14275,6 +14320,13 @@ int main(int argc, char** argv) {
     std::cout << "ChunkSystem texture callback configurado!" << std::endl << std::endl;
 
     g_gameState = new GameState();
+
+    // --seed: fija la semilla antes de generar nada, para que dos ejecuciones
+    // produzcan exactamente el mismo mundo (necesario para comparar cambios)
+    if (g_forcedSeed >= 0) {
+        g_gameState->world.setSeed(g_forcedSeed);
+        std::cout << "[BENCH] Semilla forzada: " << g_forcedSeed << std::endl;
+    }
 
     // Mostrar la semilla del mundo
     std::cout << "======================================" << std::endl;
