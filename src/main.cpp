@@ -3075,6 +3075,22 @@ static bool g_verifyGen = false;
 class World {
 private:
     std::map<Vec3i, Chunk*> chunks;
+
+    // ⭐ ESCRITURAS DIFERIDAS ENTRE CHUNKS
+    // La vegetación coloca bloques con coordenadas de mundo, así que un árbol
+    // pegado al borde escribe en el chunk vecino. Como setBlock creaba ese
+    // vecino con getOrCreateChunk -> generateChunk, generar un chunk podía
+    // disparar en cascada la generación de otros (medido: 8,6 s en un solo
+    // chunk) y hacía que el mundo dependiera del orden de generación.
+    // Ahora, mientras se genera, los bloques destinados a un chunk que aún no
+    // existe se guardan aquí y se aplican cuando ese chunk se genere.
+    struct PendingBlock { int localX, y, localZ; BlockType type; };
+    std::map<Vec3i, std::vector<PendingBlock>> pendingBlocks;
+    int generationDepth = 0;   // >0 mientras se ejecuta generateChunk
+
+    // Tope de seguridad: en un mundo infinito, los bloques pendientes de
+    // chunks que el jugador nunca visite no deben crecer sin límite.
+    static const size_t MAX_PENDING_CHUNKS = 4096;
     NextGenTerrainGenerator* terrainGen;
     int seed;
     const int RENDER_DISTANCE = 6;  // VBO OPTIMIZED: 13x13 = 169 chunks - VBOs son 10x más rápidos
@@ -3613,6 +3629,13 @@ public:
         if (chunk->isGenerated) return;
         PROFILE_SCOPE("World::generateChunk");
         Profiler::SectionTimer _gsec;   // desglose por fase (ver marks abajo)
+
+        // Marca que estamos generando: setBlock difiere en vez de crear vecinos
+        struct DepthGuard {
+            int& d;
+            explicit DepthGuard(int& depth) : d(depth) { ++d; }
+            ~DepthGuard() { --d; }
+        } _depth(generationDepth);
 
         const int SEA_LEVEL = 64;
         const int BEDROCK_LAYER = 5;
@@ -4824,6 +4847,19 @@ public:
             }
         }
 
+        // ⭐ Aplicar los bloques que chunks vecinos dejaron pendientes para éste
+        // (troncos y hojas de árboles que cruzan el borde). Se aplican después
+        // del terreno, igual que si el árbol se hubiera escrito directamente.
+        {
+            auto it = pendingBlocks.find(chunk->position);
+            if (it != pendingBlocks.end()) {
+                for (const PendingBlock& pb : it->second) {
+                    chunk->setBlock(pb.localX, pb.y, pb.localZ, pb.type);
+                }
+                pendingBlocks.erase(it);
+            }
+        }
+
         chunk->isGenerated = true;
 
         // ⭐ VERIFICACIÓN DE GENERACIÓN (--verify-gen): huella del contenido del
@@ -5504,18 +5540,28 @@ public:
             (int)floor((float)z / CHUNK_SIZE)
         );
 
+        int localX = x - chunkPos.x * CHUNK_SIZE;
+        int localZ = z - chunkPos.z * CHUNK_SIZE;
+
+        if (localX < 0) localX += CHUNK_SIZE;
+        if (localZ < 0) localZ += CHUNK_SIZE;
+
+        // ⭐ Durante la generación, no crear el chunk vecino: eso provocaba
+        // generación recursiva en cascada (ver pendingBlocks). El bloque se
+        // aplica cuando ese chunk se genere por su cuenta.
+        if (generationDepth > 0 && !getChunk(chunkPos)) {
+            if (pendingBlocks.size() < MAX_PENDING_CHUNKS || pendingBlocks.count(chunkPos)) {
+                pendingBlocks[chunkPos].push_back({localX, y, localZ, type});
+            }
+            return;
+        }
+
         // ⭐ PROTECCIÓN: Verificar que el chunk se creó correctamente
         Chunk* chunk = getOrCreateChunk(chunkPos);
         if (!chunk) {
             std::cerr << "⚠️ WARNING: No se pudo crear chunk en (" << chunkPos.x << ", " << chunkPos.z << ")" << std::endl;
             return;
         }
-
-        int localX = x - chunkPos.x * CHUNK_SIZE;
-        int localZ = z - chunkPos.z * CHUNK_SIZE;
-
-        if (localX < 0) localX += CHUNK_SIZE;
-        if (localZ < 0) localZ += CHUNK_SIZE;
 
         chunk->setBlock(localX, y, localZ, type);
 
