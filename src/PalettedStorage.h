@@ -5,15 +5,14 @@
 #include <algorithm>
 #include <cmath>
 
+#include "BlockType.h"
+
 // ============================================================================
 // SISTEMA DE PALETAS - Optimización de Memoria para Chunks
 // ============================================================================
 // Inspirado en Minecraft 1.13+ y versiones modernas
 // Reduce el uso de memoria de ~260KB por chunk a ~20-100KB dependiendo de la variedad de bloques
 // ============================================================================
-
-// NOTA: BlockType debe estar definido ANTES de incluir este header
-// En main.cpp se define como: enum BlockType { BLOCK_AIR = 0, ... };
 
 
 // ============================================================================

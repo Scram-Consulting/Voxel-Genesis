@@ -49,3 +49,13 @@ if(WIN32)
     # Usar subsistema Windows pero mantener main() en lugar de WinMain()
     target_link_options(VoxelWorld PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
 endif()
+
+# ============================================================================
+# TESTS
+# ============================================================================
+option(VOXEL_BUILD_TESTS "Compilar los tests unitarios" ON)
+
+if(VOXEL_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

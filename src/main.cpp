@@ -198,46 +198,10 @@ struct Vec3i {
 // ============================================================================
 // TIPOS DE BLOQUES
 // ============================================================================
+#include "BlockType.h"
 
-enum BlockType {
-    BLOCK_AIR = 0,
-    BLOCK_GRASS,
-    BLOCK_DIRT,
-    BLOCK_STONE,
-    BLOCK_WOOD,
-    BLOCK_LEAVES,
-    BLOCK_SAND,
-    BLOCK_WATER,
-    BLOCK_TALLGRASS,
-    BLOCK_BEDROCK,
-    BLOCK_COBBLESTONE,
-    BLOCK_PLANKS,
-    BLOCK_BRICKS,
-    BLOCK_GLASS,
-    BLOCK_COAL_ORE,
-    BLOCK_DIAMOND_ORE,
-    BLOCK_GRAVEL,         // Grava - genera en ríos y bajo tierra
-    BLOCK_ORANGE_FLOWER,  // Flor naranja - genera en praderas
-    BLOCK_SNOW,           // Nieve - genera en biomas fríos
-    BLOCK_SCRAP_METAL,    // Desecho de metales
-    BLOCK_LAVA,           // Lava - genera en cuevas profundas
-    // Nuevos minerales agregados al final para no romper mundos existentes
-    BLOCK_IRON_ORE,       // Hierro - poco común
-    BLOCK_GOLD_ORE,       // Oro - poco común en ríos y océanos
-    BLOCK_SILVER_ORE,     // Plata - poco común en ríos y océanos
-    // Nuevos items crafteables
-    BLOCK_DIRT_POWDER,    // Polvo de tierra - crafteable desde tierra
-    BLOCK_STICK,          // Palo - crafteable desde tablones
-    BLOCK_HOE,            // Hoz - herramienta crafteable
-    // Nuevos items que dropean los minerales
-    BLOCK_COAL_ITEM,      // Carbón (item) - dropea del mineral de carbón
-    BLOCK_RAW_ZINC,       // Zinc crudo - dropea del desecho de metales
-    BLOCK_RAW_COPPER      // Cobre crudo - dropea del desecho de metales
-};
-
-// Último valor válido del enum: usado para validar datos leídos de archivos.
-// ⚠️ Actualizar si se añaden bloques al final del enum.
-constexpr int BLOCK_TYPE_MAX = BLOCK_RAW_COPPER;
+// Validación de nombres de mundo (usados como nombres de carpeta en saves/)
+#include "WorldName.h"
 
 // ============================================================================
 // SISTEMA DE RAREZA DE MINERALES
@@ -2879,102 +2843,8 @@ public:
     }
 };
 
-struct InventorySlot {
-    BlockType blockType;
-    int count;
-
-    InventorySlot() : blockType(BLOCK_AIR), count(0) {}
-
-    bool isEmpty() const { return blockType == BLOCK_AIR || count <= 0; }
-
-    bool canStack(BlockType type) const {
-        return isEmpty() || (blockType == type && count < 100);
-    }
-
-    void add(BlockType type, int amount = 1) {
-        if (isEmpty()) {
-            blockType = type;
-            count = amount;
-        } else if (blockType == type) {
-            count += amount;
-            if (count > 100) count = 100;
-        }
-    }
-
-    bool remove(int amount = 1) {
-        if (count >= amount) {
-            count -= amount;
-            if (count <= 0) {
-                blockType = BLOCK_AIR;
-                count = 0;
-            }
-            return true;
-        }
-        return false;
-    }
-};
-
-// Inventario del jugador
-struct Inventory {
-    static const int SLOTS = 45;  // 45 slots (5 filas de 9)
-    InventorySlot slots[SLOTS];
-    int selectedSlot;
-
-    Inventory() : selectedSlot(0) {
-        // ⭐ Inventario vacío al inicio - el jugador debe conseguir items minando/crafteo
-        // Los slots se inicializan automáticamente con BLOCK_AIR y count=0
-    }
-
-    // ⭐ Limpiar completamente el inventario (para mundos nuevos)
-    void clear() {
-        for (int i = 0; i < SLOTS; i++) {
-            slots[i].blockType = BLOCK_AIR;
-            slots[i].count = 0;
-        }
-        selectedSlot = 0;
-    }
-
-    bool addItem(BlockType type, int amount = 1) {
-        // Intentar stackear en slot existente
-        for (int i = 0; i < SLOTS; i++) {
-            if (slots[i].canStack(type)) {
-                slots[i].add(type, amount);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool removeItem(BlockType type, int amount = 1) {
-        for (int i = 0; i < SLOTS; i++) {
-            if (slots[i].blockType == type && slots[i].count >= amount) {
-                slots[i].remove(amount);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    BlockType getSelectedBlock() const {
-        if (selectedSlot >= 0 && selectedSlot < SLOTS) {
-            return slots[selectedSlot].blockType;
-        }
-        return BLOCK_AIR;
-    }
-
-    bool hasSelectedBlock() const {
-        if (selectedSlot >= 0 && selectedSlot < SLOTS) {
-            return !slots[selectedSlot].isEmpty();
-        }
-        return false;
-    }
-
-    void consumeSelected() {
-        if (selectedSlot >= 0 && selectedSlot < SLOTS) {
-            slots[selectedSlot].remove(1);
-        }
-    }
-};
+// Inventario del jugador (InventorySlot + Inventory)
+#include "Inventory.h"
 
 // ============================================================================
 // ⭐⭐⭐ SISTEMA DE CRAFTEO 3x3 ⭐⭐⭐
@@ -10374,7 +10244,7 @@ void charCallback(GLFWwindow* window, unsigned int codepoint) {
             // Añadir el carácter al nombre
             char c = (char)codepoint;
             // Solo permitir caracteres alfanuméricos, espacios, guiones y guiones bajos
-            if (isalnum(c) || c == ' ' || c == '-' || c == '_') {
+            if (WorldName::isAllowedChar(c)) {
                 g_gameState->editingWorldNewName += c;
             }
         }
@@ -10384,7 +10254,7 @@ void charCallback(GLFWwindow* window, unsigned int codepoint) {
     if (g_gameState->isEditingNewWorldName && g_gameState->screenState == SCREEN_WORLD_CREATE) {
         if (g_gameState->newWorldName.length() < 50) {
             char c = (char)codepoint;
-            if (isalnum(c) || c == ' ' || c == '-' || c == '_') {
+            if (WorldName::isAllowedChar(c)) {
                 g_gameState->newWorldName += c;
             }
         }
@@ -12516,19 +12386,12 @@ bool renameWorld(GameState* state, int worldIndex, const std::string& newName) {
         return false;
     }
 
-    // Validar nombre nuevo
-    if (newName.empty()) {
-        std::cerr << "Error: El nombre no puede estar vacio" << std::endl;
+    // Validar nombre nuevo (ver WorldName.h: bloquea traversal, no-ASCII,
+    // nombres reservados de Windows y sufijos problemáticos)
+    WorldName::Validity validity = WorldName::validate(newName);
+    if (validity != WorldName::Validity::Ok) {
+        std::cerr << "Error: " << WorldName::describe(validity) << std::endl;
         return false;
-    }
-
-    // Validar caracteres del nombre (no permitir caracteres especiales)
-    for (char c : newName) {
-        if (!std::isalnum(c) && c != '_' && c != ' ' && c != '-') {
-            std::cerr << "Error: El nombre contiene caracteres no permitidos" << std::endl;
-            std::cerr << "Solo se permiten letras, numeros, espacios, guiones y guiones bajos" << std::endl;
-            return false;
-        }
     }
 
     std::string oldPath = state->savedWorlds[worldIndex].folderPath;
@@ -14424,8 +14287,8 @@ bool loadWorldData(GameState* state, const std::string& worldName) {
                 if (bt < 0 || bt > BLOCK_TYPE_MAX || count <= 0) {
                     bt = BLOCK_AIR;
                     count = 0;
-                } else if (count > 100) {
-                    count = 100;  // límite de stack del juego
+                } else if (count > MAX_STACK_SIZE) {
+                    count = MAX_STACK_SIZE;  // límite de stack del juego
                 }
                 state->inventory.slots[i].blockType = static_cast<BlockType>(bt);
                 state->inventory.slots[i].count = count;
