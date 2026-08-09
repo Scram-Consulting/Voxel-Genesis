@@ -3685,6 +3685,29 @@ public:
             return biomeCache[idx];
         };
 
+        // ⭐ CACHE DE ALTURA POR COLUMNA
+        // getTerrainHeight ignora el bioma que recibe y siempre delega en
+        // getBlendedTerrainHeight(x,z), que muestrea 9 biomas y hasta 9 alturas
+        // más. Se llamaba hasta 5 veces por columna (capa de terreno, las dos
+        // ramas de blending océano/llanura, la de colinas, los lagos de lava y
+        // la grava) recalculando exactamente el mismo número.
+        std::vector<int> heightCache(CHUNK_SIZE * CHUNK_SIZE, 0);
+        std::vector<char> heightCached(CHUNK_SIZE * CHUNK_SIZE, 0);
+
+        auto heightAt = [&](int wx, int wz) -> int {
+            int lx = wx - baseX;
+            int lz = wz - baseZ;
+            if (lx < 0 || lx >= CHUNK_SIZE || lz < 0 || lz >= CHUNK_SIZE) {
+                return terrainGen->getTerrainHeight((float)wx, (float)wz, biomeAt(wx, wz));
+            }
+            int idx = lz * CHUNK_SIZE + lx;
+            if (!heightCached[idx]) {
+                heightCache[idx] = terrainGen->getTerrainHeight((float)wx, (float)wz, biomeAt(wx, wz));
+                heightCached[idx] = 1;
+            }
+            return heightCache[idx];
+        };
+
         // Generate terrain using hierarchical layer system
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -3724,7 +3747,7 @@ public:
                                 biomeE.erosion + biomeW.erosion) * 0.125f;
 
                 // LAYER 7: Calculate terrain height based on biome
-                int terrainHeight = terrainGen->getTerrainHeight((float)worldX, (float)worldZ, biome);
+                int terrainHeight = heightAt(worldX, worldZ);
 
                 // ⭐⭐⭐ LAYER 7.5: BIOME BLENDING (Elimina cortes entre biomas)
                 // Detectar si estamos cerca de bordes de biomas y hacer blend suave
@@ -3742,7 +3765,7 @@ public:
                             // Crear bioma océano temporal para calcular su altura
                             BiomeData oceanBiome = biome;
                             oceanBiome.biomeType = BIOME_OCEAN;
-                            int oceanHeight = terrainGen->getTerrainHeight((float)worldX, (float)worldZ, oceanBiome);
+                            int oceanHeight = heightAt(worldX, worldZ);
 
                             // Blend entre océano y altura actual
                             terrainHeight = (int)((float)terrainHeight * (1.0f - blendFactor) + (float)oceanHeight * blendFactor);
@@ -3754,7 +3777,7 @@ public:
                             // Crear bioma plains temporal para calcular su altura
                             BiomeData plainsBiome = biome;
                             plainsBiome.biomeType = BIOME_PLAINS;
-                            int plainsHeight = terrainGen->getTerrainHeight((float)worldX, (float)worldZ, plainsBiome);
+                            int plainsHeight = heightAt(worldX, worldZ);
 
                             // Blend entre playa y plains
                             terrainHeight = (int)((float)terrainHeight * (1.0f - blendFactor) + (float)plainsHeight * blendFactor);
@@ -3770,7 +3793,7 @@ public:
                         // Crear bioma hills/plains temporal
                         BiomeData hillsBiome = biome;
                         hillsBiome.biomeType = BIOME_HILLS;
-                        int hillsHeight = terrainGen->getTerrainHeight((float)worldX, (float)worldZ, hillsBiome);
+                        int hillsHeight = heightAt(worldX, worldZ);
 
                         // Blend entre hills y montañas
                         terrainHeight = (int)((float)terrainHeight * (1.0f - blendFactor) + (float)hillsHeight * blendFactor);
@@ -4098,8 +4121,8 @@ public:
                 float lavaLakeNoise = perlinLocal.octaveNoise((float)worldX * 0.02f, 0.0f, (float)worldZ * 0.02f, 2);
                 if (lavaLakeNoise > 0.85f) {  // ~1% de probabilidad
                     // Obtener altura del terreno
-                    BiomeData biomeData = terrainGen->getBiomeData((float)worldX, (float)worldZ, SEA_LEVEL);
-                    int terrainHeight = terrainGen->getTerrainHeight((float)worldX, (float)worldZ, biomeData);
+                    const BiomeData& biomeData = biomeAt(worldX, worldZ);
+                    int terrainHeight = heightAt(worldX, worldZ);
 
                     // Solo en tierra, no bajo el agua
                     if (terrainHeight > SEA_LEVEL + 5) {
@@ -4244,8 +4267,8 @@ public:
                 int worldZ = chunk->position.z * CHUNK_SIZE + z;
 
                 // Obtener bioma y altura para generación mejorada de grava
-                BiomeData biomeData = terrainGen->getBiomeData((float)worldX, (float)worldZ, SEA_LEVEL);
-                int terrainHeight = terrainGen->getTerrainHeight((float)worldX, (float)worldZ, biomeData);
+                const BiomeData& biomeData = biomeAt(worldX, worldZ);
+                int terrainHeight = heightAt(worldX, worldZ);
 
                 // 1. GRAVA EN PLAYAS (zonas costeras cerca del agua)
                 if (terrainHeight >= SEA_LEVEL - 3 && terrainHeight <= SEA_LEVEL + 3) {
