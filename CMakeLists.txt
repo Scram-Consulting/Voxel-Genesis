@@ -31,7 +31,6 @@ set(SOURCES
     src/ChunkSystem.cpp
     src/SaveSystem.cpp
     src/Profiler.cpp
-    # src/RenderOptimizations.cpp  # Temporalmente deshabilitado (conflicto con GL headers)
 )
 
 # Executable (WIN32 elimina la ventana de consola en Windows)
