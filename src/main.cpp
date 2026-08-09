@@ -671,13 +671,25 @@ public:
     PerlinNoise(unsigned int seed) {
         p.resize(256);
         for (int i = 0; i < 256; i++) p[i] = i;
-        
-        srand(seed);
+
+        // RNG local que reproduce exactamente la secuencia de rand() de MSVC.
+        // Antes esto era srand()/rand(), estado global del proceso: como se
+        // construye un PerlinNoise por chunk, cada generación reiniciaba la
+        // secuencia que usan las partículas (volviéndolas repetitivas) y hacía
+        // imposible generar chunks en varios hilos. Se replica el LCG en lugar
+        // de usar <random> para que la permutación —y por tanto el terreno de
+        // los mundos existentes— salga idéntica.
+        unsigned int rngState = seed;
+        auto nextRand = [&rngState]() -> int {
+            rngState = rngState * 214013u + 2531011u;
+            return (int)((rngState >> 16) & 0x7FFF);
+        };
+
         for (int i = 255; i > 0; i--) {
-            int j = rand() % (i + 1);
+            int j = nextRand() % (i + 1);
             std::swap(p[i], p[j]);
         }
-        
+
         p.insert(p.end(), p.begin(), p.end());
     }
 
