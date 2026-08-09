@@ -5892,15 +5892,17 @@ public:
 
         PROFILE_SCOPE("World::buildChunkMesh");
 
-        // ⭐ OPTIMIZACIÓN: Early exit si el chunk está vacío
+        // ⭐ OPTIMIZACIÓN: Early exit si el chunk está vacío.
+        // La paleta ya lo sabe: basta mirar los 16 subchunks en vez de recorrer
+        // los 65.536 bloques con getBlock() (que hace división, módulo e
+        // indirección de paleta en cada uno).
+        // Equivalente exacto: una paleta no uniforme tiene entradas distintas,
+        // así que al menos una no es aire.
         bool hasBlocks = false;
-        for (int x = 0; x < CHUNK_SIZE && !hasBlocks; x++) {
-            for (int z = 0; z < CHUNK_SIZE && !hasBlocks; z++) {
-                for (int y = 0; y < CHUNK_HEIGHT && !hasBlocks; y++) {
-                    if (chunk->getBlock(x, y, z) != BLOCK_AIR) {
-                        hasBlocks = true;
-                    }
-                }
+        for (const PalettedSubChunk& sub : chunk->subchunks) {
+            if (!sub.isUniform() || sub.getUniformBlock() != BLOCK_AIR) {
+                hasBlocks = true;
+                break;
             }
         }
 
