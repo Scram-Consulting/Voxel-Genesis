@@ -53,11 +53,27 @@ mientras el árbol del proyecto esté intacto.
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-54 casos con [doctest](https://github.com/doctest/doctest) (vendorizado en
+57 casos con [doctest](https://github.com/doctest/doctest) (vendorizado en
 `external/doctest`) sobre la lógica que protege los datos del jugador:
-compresión y serialización de chunks, almacenamiento paletizado, inventario y
-validación de nombres de mundo. Se compilan por defecto; usa
-`-DVOXEL_BUILD_TESTS=OFF` para omitirlos.
+compresión y serialización de chunks, almacenamiento paletizado, inventario,
+validación de nombres de mundo y compatibilidad del RNG del terreno. Se
+compilan por defecto; usa `-DVOXEL_BUILD_TESTS=OFF` para omitirlos.
+
+## Medir rendimiento
+
+```bash
+build\bin\Release\VoxelWorld.exe --benchmark 30 --seed 777
+```
+
+Entra directo a un mundo, mide 30 segundos en juego y sale. El log recibe una
+línea `[PERF]` cada ~5 s con FPS, tiempo de frame y desglose por función. En
+juego, `F3` muestra el mismo overlay en pantalla.
+
+| Flag | Efecto |
+|---|---|
+| `--benchmark N` | Salta menús, mide N segundos en juego y cierra |
+| `--seed N` | Fija la semilla: dos ejecuciones generan el mismo mundo |
+| `--verify-gen` | Registra un CRC32 de cada chunk generado, para comprobar que un cambio en la generación no altera el terreno |
 
 ## Estructura
 
@@ -102,9 +118,11 @@ abordó y lo que queda:
   silencio (formato de guardado en v2, con lectura de saves v1)
 - ✅ Suite de tests sobre la lógica crítica
 - ✅ Eliminadas ~7000 líneas de código muerto
-- ⬜ Rendimiento: falta mover generación, meshing e iluminación a hilos de
-  trabajo (la infraestructura existe pero nunca se arranca) e integrar greedy
-  meshing. La iluminación está desactivada desde un intento previo de subir FPS.
+- 🔶 Rendimiento: corregida una cascada recursiva de generación de chunks que
+  hundía el juego a 1,7 FPS al explorar (ahora ~24 FPS mientras carga, 60 en
+  reposo). Falta mover la generación a hilos de trabajo para eliminar del todo
+  el tirón: `generateChunk` cuesta ~65 ms y corre en el hilo principal.
+  La iluminación sigue desactivada desde un intento previo de subir FPS.
 - ⬜ Arquitectura: `main.cpp` sigue siendo un monolito con una clase `World` que
   concentra demasiadas responsabilidades
 

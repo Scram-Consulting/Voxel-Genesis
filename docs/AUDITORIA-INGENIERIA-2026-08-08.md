@@ -12,13 +12,28 @@
 > | 2 — Integridad de datos (C1–C5) | ✅ Hecha | `dea3120` |
 > | 3 — Tests de caracterización | ✅ Hecha | `2922b3c` |
 > | 4 — Limpieza (código muerto, docs) | ✅ Hecha | `87b9372`, `249829e` |
-> | 5 — Rendimiento real (threading, greedy meshing) | ⬜ Pendiente | — |
+> | 5 — Rendimiento real | 🔶 Parcial | `f67581e`…`5e` |
 > | 6 — Desmonte del monolito | ⬜ Iniciada parcialmente | `2922b3c` |
 >
-> Notas sobre lo pendiente: la Fase 5 es la que queda con más impacto (la
-> iluminación sigue desactivada y todo el trabajo pesado corre en el hilo
-> principal). De la Fase 6 solo se extrajeron `BlockType.h`, `Inventory.h` y
-> `WorldName.h`; `main.cpp` sigue en ~16.200 líneas.
+> **Corrección al diagnóstico de rendimiento de esta auditoría.** Al instrumentar
+> el motor (algo que nunca se había hecho) resultó que la causa dominante no era
+> ninguna de las listadas abajo, sino una **cascada recursiva de generación de
+> chunks**: la vegetación escribe con coordenadas de mundo vía `World::setBlock`,
+> que llamaba a `getOrCreateChunk` → `generateChunk`, de modo que un árbol junto
+> al borde generaba el chunk vecino en plena generación, y así sucesivamente. Un
+> solo `generateChunk` llegaba a costar 8,6 s y el juego caía a 1,7 FPS al
+> explorar. Corregido con escrituras diferidas (`pendingBlocks`), lo que además
+> hizo la generación determinista: antes, la misma semilla producía terreno
+> distinto según el orden en que el jugador provocara la generación.
+>
+> Estado tras la Fase 5 parcial: 60 FPS en reposo, ~24 FPS mientras carga chunks
+> (antes 1,7). Lo que queda es mover `generateChunk` (~65 ms, dominado por
+> `getBlendedTerrainHeight`: ~2.300 evaluaciones de bioma por chunk) a hilos de
+> trabajo; ya se eliminó el bloqueador para ello (el `srand()` global del
+> constructor de `PerlinNoise`). La iluminación sigue desactivada.
+>
+> De la Fase 6 solo se extrajeron `BlockType.h`, `Inventory.h` y `WorldName.h`;
+> `main.cpp` sigue en ~16.200 líneas.
 
 **Fecha:** 2026-08-08
 **Alcance:** proyecto completo en `C:\VoxelGenesis` (motor de vóxeles tipo Minecraft, C++20, OpenGL fixed-function + VBO, GLFW 3.4, solo Windows, ~26.000 líneas).
