@@ -3609,6 +3609,7 @@ public:
     void generateChunk(Chunk* chunk) {
         if (chunk->isGenerated) return;
         PROFILE_SCOPE("World::generateChunk");
+        Profiler::SectionTimer _gsec;   // desglose por fase (ver marks abajo)
 
         const int SEA_LEVEL = 64;
         const int BEDROCK_LAYER = 5;
@@ -3619,6 +3620,7 @@ public:
         // ========================================================================
         // NEXT-GEN HIERARCHICAL TERRAIN GENERATION
         // ========================================================================
+        _gsec.mark("gen:01-terrain");
 
         // Generate terrain using hierarchical layer system
         for (int x = 0; x < CHUNK_SIZE; x++) {
@@ -3844,6 +3846,7 @@ public:
         // ========================================================================
         // ⭐ NUEVO: GENERAR FONDO ACUÁTICO REALISTA (sin pasto bajo agua)
         // ========================================================================
+        _gsec.mark("gen:02-seabed");
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
                 int worldX = chunk->position.x * CHUNK_SIZE + x;
@@ -3961,6 +3964,7 @@ public:
         // ========================================================================
         // LAYER 9A: GENERACIÓN DE LAVA EN CUEVAS PROFUNDAS
         // ========================================================================
+        _gsec.mark("gen:03-lava-caves");
         // Llenar lava en cuevas profundas (Y <= 11, similar a Minecraft)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -3986,6 +3990,7 @@ public:
         // ========================================================================
         // LAYER 9B: BOLSAS DE LAVA SUBTERRÁNEAS
         // ========================================================================
+        _gsec.mark("gen:04-lava-pockets");
         // Generar pequeñas bolsas de lava en capas de piedra (Y=1 a Y=50)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -4020,6 +4025,7 @@ public:
         // ========================================================================
         // LAYER 9C: LAGOS DE LAVA EN LA SUPERFICIE
         // ========================================================================
+        _gsec.mark("gen:05-lava-lakes");
         // Lagos de lava raros en la superficie (muy raros, como Minecraft)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -4065,6 +4071,7 @@ public:
         // ========================================================================
         // LAYER 8D: SISTEMA MEJORADO DE GENERACIÓN DE MINERALES EN VENAS
         // ========================================================================
+        _gsec.mark("gen:06-ore-veins");
         // ⭐ MEJORADO: Generar minerales en VENAS (como Minecraft) en lugar de bloques individuales
         for (const auto& mineral : MINERAL_DATA) {
             // Determinar tamaño de vena según rareza
@@ -4160,6 +4167,7 @@ public:
         // ========================================================================
         // LAYER 9: GRAVA Y MINERAL DE ZINC
         // ========================================================================
+        _gsec.mark("gen:07-gravel-zinc");
         // Función hash simple para generar "ruido" pseudoaleatorio
         auto simpleHash = [](int x, int y, int z) -> float {
             int n = x + y * 57 + z * 131;
@@ -4250,6 +4258,7 @@ public:
         // ========================================================================
         // LAYER 9C: DECORACIÓN NATURAL Y DESORDEN (Rocas, Parches, Bloques Dispersos)
         // ========================================================================
+        _gsec.mark("gen:08-decoration");
         // ⭐ NUEVO: Añadir elementos naturales dispersos para más realismo
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -4470,6 +4479,7 @@ public:
         // ========================================================================
         // LAYER 9E: ESTALACTITAS Y ESTALAGMITAS EN CUEVAS
         // ========================================================================
+        _gsec.mark("gen:09-stalactites");
         // ⭐⭐⭐ NUEVO: Decorar cuevas con formaciones rocosas
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -4520,6 +4530,7 @@ public:
         // ========================================================================
         // LAYER 9D: SUAVIZADO DE TERRENO (Anti-Aliasing del terreno)
         // ========================================================================
+        _gsec.mark("gen:10-smoothing");
         // ⭐ NUEVO: Suavizar transiciones abruptas en el terreno para evitar "chunks rotos"
         for (int x = 1; x < CHUNK_SIZE - 1; x++) {
             for (int z = 1; z < CHUNK_SIZE - 1; z++) {
@@ -4624,6 +4635,7 @@ public:
         // ========================================================================
         // LAYER 10: VEGETATION GENERATION (Advanced Forest & Mountain Trees)
         // ========================================================================
+        _gsec.mark("gen:11-vegetation");
         // OPTIMIZACIÓN: Reducir densidad de árboles para mejor rendimiento
         for (int x = 2; x < CHUNK_SIZE - 2; x += 2) { // Saltar cada 2 bloques
             for (int z = 2; z < CHUNK_SIZE - 2; z += 2) { // Saltar cada 2 bloques

@@ -81,6 +81,29 @@ public:
     static void recordTiming(const char* name, float ms);
 };
 
+// Cronómetro por secciones para funciones largas cuyas fases no están
+// separadas en bloques propios: cada mark() cierra la sección anterior.
+class SectionTimer {
+private:
+    std::chrono::high_resolution_clock::time_point last_;
+    const char* label_ = nullptr;
+
+public:
+    SectionTimer() : last_(std::chrono::high_resolution_clock::now()) {}
+
+    void mark(const char* next) {
+        auto now = std::chrono::high_resolution_clock::now();
+        if (label_) {
+            ScopedTimer::recordTiming(label_,
+                std::chrono::duration<float, std::milli>(now - last_).count());
+        }
+        label_ = next;
+        last_ = now;
+    }
+
+    ~SectionTimer() { mark(nullptr); }
+};
+
 // Macro para profiling fácil.
 // La doble indirección es necesaria: con un solo nivel, ##__LINE__ se pega
 // literalmente ("_timer___LINE__") en vez de expandirse al número de línea, y
