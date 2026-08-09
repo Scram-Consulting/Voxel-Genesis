@@ -12,7 +12,7 @@
 > | 2 — Integridad de datos (C1–C5) | ✅ Hecha | `dea3120` |
 > | 3 — Tests de caracterización | ✅ Hecha | `2922b3c` |
 > | 4 — Limpieza (código muerto, docs) | ✅ Hecha | `87b9372`, `249829e` |
-> | 5 — Rendimiento real | 🔶 Parcial | `f67581e`…`5e` |
+> | 5 — Rendimiento real | ✅ Hecha | `f67581e`…`5h` |
 > | 6 — Desmonte del monolito | ⬜ Iniciada parcialmente | `2922b3c` |
 >
 > **Corrección al diagnóstico de rendimiento de esta auditoría.** Al instrumentar
@@ -26,26 +26,30 @@
 > hizo la generación determinista: antes, la misma semilla producía terreno
 > distinto según el orden en que el jugador provocara la generación.
 >
-> Estado tras la Fase 5 parcial: 60 FPS la mayor parte del tiempo incluso
-> cargando chunks, con bajadas a ~29 en las ráfagas más pesadas (antes 1,7). El
-> coste de generar un chunk bajó de 122 a 83 ms combinando tres cambios de
-> salida idéntica: memoizar las muestras de bioma, memoizar la altura por
-> columna (`getTerrainHeight` ignora el bioma que recibe y recalculaba el mismo
-> valor hasta 5 veces) y detectar chunks vacíos con la paleta en vez de recorrer
-> 65.536 bloques.
+> **Resultado de la Fase 5: de 1,7 a 60 FPS explorando.** En cuatro pasos:
+> 1. Eliminada la cascada recursiva descrita arriba.
+> 2. Tres optimizaciones de salida idéntica que bajaron el coste de generar un
+>    chunk de 122 a 83 ms: memoizar las muestras de bioma, memoizar la altura por
+>    columna (`getTerrainHeight` ignora el bioma que recibe y recalculaba el mismo
+>    valor hasta 5 veces, de modo que el código de blending mezclaba un valor
+>    consigo mismo) y detectar chunks vacíos con la paleta en vez de recorrer
+>    65.536 bloques.
+> 3. Quitado el `srand()` global del constructor de `PerlinNoise`, que reiniciaba
+>    el RNG del proceso en cada chunk e impedía generar en paralelo.
+> 4. Generación movida a hilos de trabajo mediante `World::GenContext`, un
+>    contexto por hilo que hace que `setBlock`/`getBlock` con coordenadas de mundo
+>    se resuelvan contra el chunk en curso en vez del mapa global.
 >
-> Lo que queda para cerrar la Fase 5:
-> 1. **Mover `generateChunk` a hilos de trabajo.** Es el único cambio que elimina
->    el tirón del todo. El bloqueador ya está resuelto (el `srand()` global de
->    `PerlinNoise`), pero exige decidir un detalle: durante la generación,
->    `getBlock` con coordenadas fuera del chunk consulta el mundo vivo, lo que no
->    es seguro entre hilos. Tratar esas lecturas como aire lo haría seguro *y*
->    determinista, al precio de una diferencia cosmética en la vegetación de los
->    bordes de chunk en terreno nuevo.
-> 2. **Reactivar la iluminación**, viable una vez la generación esté fuera del
->    hilo principal.
-> 3. El coste restante se concentra en `getBlendedTerrainHeight` (~9 muestras de
->    bioma y hasta 9 alturas por columna); reducirlo sí cambiaría el terreno.
+> Contrapartida asumida en el paso 4: durante la generación, las lecturas fuera
+> del chunk devuelven aire en lugar de consultar el mundo vivo. Antes el resultado
+> dependía de qué vecinos estuvieran cargados —era indeterminismo, no una
+> funcionalidad—; el cambio afecta a 1 de cada 13 chunks, en columnas de borde con
+> decoración.
+>
+> Lo que queda: **reactivar la iluminación** (desactivada desde un intento previo
+> de subir FPS; ahora el hilo principal tiene margen de sobra) y, si algún día
+> hiciera falta más, reducir `getBlendedTerrainHeight` (~9 muestras de bioma y
+> hasta 9 alturas por columna) — pero eso sí cambiaría el terreno.
 >
 > De la Fase 6 solo se extrajeron `BlockType.h`, `Inventory.h` y `WorldName.h`;
 > `main.cpp` sigue en ~16.200 líneas.
