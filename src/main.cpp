@@ -7,6 +7,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>     // _dup2/_fileno (redirección de logs)
 #include <gl/GL.h>
 #include <mmsystem.h>
 #pragma comment(lib, "opengl32.lib")
@@ -95,9 +96,69 @@ void loadVBOFunctions() {
 
     if (!glGenBuffers || !glDeleteBuffers || !glBindBuffer || !glBufferData) {
         std::cerr << "ERROR: No se pudieron cargar funciones VBO. GPU muy antigua." << std::endl;
+        MessageBoxA(nullptr,
+                    "Tu GPU no soporta las extensiones VBO de OpenGL requeridas.\n"
+                    "El juego no puede continuar.",
+                    "VoxelWorld - Error fatal", MB_OK | MB_ICONERROR);
         exit(1);
     }
     std::cout << "VBO Extensions cargadas correctamente!" << std::endl;
+}
+
+// ============================================================================
+// RUTAS BASE Y LOGGING
+// ============================================================================
+
+// Directorio donde vive el ejecutable
+static std::string getExeDir() {
+    char buf[MAX_PATH];
+    DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return ".";
+    return std::filesystem::path(buf).parent_path().string();
+}
+
+// Raíz del proyecto: sube desde el exe hasta encontrar resourcepacks/
+// (el exe vive en build/bin/Release/, los recursos en la raíz del proyecto)
+static const std::string& getResourceRoot() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    namespace fs = std::filesystem;
+    fs::path dir = getExeDir();
+    for (int i = 0; i < 6; ++i) {
+        if (fs::exists(dir / "resourcepacks")) {
+            cached = dir.string();
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir.parent_path() == dir) break;
+        dir = dir.parent_path();
+    }
+    cached = fs::current_path().string();
+    std::cerr << "WARNING: no se encontró resourcepacks/ subiendo desde el exe; "
+              << "usando directorio actual: " << cached << std::endl;
+    return cached;
+}
+
+// El binario se enlaza con /SUBSYSTEM:WINDOWS (sin consola): sin esto,
+// todos los cout/cerr se descartan. Redirige ambos a un archivo de log.
+static void initLogging() {
+    namespace fs = std::filesystem;
+    fs::path logDir;
+    const char* localAppData = getenv("LOCALAPPDATA");
+    if (localAppData && *localAppData) {
+        logDir = fs::path(localAppData) / "VoxelGenesis";
+    } else {
+        logDir = fs::path(getExeDir()) / "logs";
+    }
+    std::error_code ec;
+    fs::create_directories(logDir, ec);
+    fs::path logFile = logDir / "log.txt";
+    if (freopen(logFile.string().c_str(), "w", stdout)) {
+        _dup2(_fileno(stdout), _fileno(stderr));
+    }
+    // Sin buffer: si el juego crashea, el log queda completo en disco
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    std::cout << "=== VoxelWorld log: " << logFile.string() << " ===" << std::endl;
 }
 
 // ============================================================================
@@ -413,7 +474,7 @@ private:
     double lastPlaceTime;
 
 public:
-    SoundManager(const std::string& path = "D:/Respaldo/Voxel World/sounds/")
+    SoundManager(const std::string& path = getResourceRoot() + "/sounds/")
         : soundPath(path), masterVolume(0.5f), enabled(true),
           lastFootstepTime(0), lastBreakTime(0), lastPlaceTime(0) {
 
@@ -1925,7 +1986,7 @@ private:
     std::vector<GLuint> destroyStageTextures;
 
 public:
-    TextureManager(const std::string& resPath = "D:/Respaldo/Voxel World/resourcepacks/Textures/Blocks/")
+    TextureManager(const std::string& resPath = getResourceRoot() + "/resourcepacks/Textures/Blocks/")
         : resourcePath(resPath), lastBoundTexture(0), currentWaterFrame(0), waterAnimTimer(0.0) {}
 
     ~TextureManager() {
@@ -2065,7 +2126,7 @@ public:
     void loadDestroyStageTextures() {
         std::cout << "=== Cargando texturas de destrucción de bloques ===" << std::endl;
 
-        std::string animPath = "D:/Respaldo/Voxel World/resourcepacks/Textures/Blocks/Animaciones/";
+        std::string animPath = resourcePath + "Animaciones/";
         destroyStageTextures.clear();
 
         // Cargar las 10 etapas (destroy_stage_0.png a destroy_stage_9.png)
@@ -2292,19 +2353,19 @@ public:
         // Mapeo de items a texturas en la carpeta Items/
         switch (type) {
             case BLOCK_DIRT_POWDER:
-                return loadTextureFromPath("D:/Respaldo/Voxel World/resourcepacks/Textures/Items/polvo de tierra.png");
+                return loadTextureFromPath(getResourceRoot() + "/resourcepacks/Textures/Items/polvo de tierra.png");
 
             case BLOCK_STICK:
-                return loadTextureFromPath("D:/Respaldo/Voxel World/resourcepacks/Textures/Items/palo.png");
+                return loadTextureFromPath(getResourceRoot() + "/resourcepacks/Textures/Items/palo.png");
 
             case BLOCK_COAL_ITEM:
-                return loadTextureFromPath("D:/Respaldo/Voxel World/resourcepacks/Textures/Items/carbon.png");
+                return loadTextureFromPath(getResourceRoot() + "/resourcepacks/Textures/Items/carbon.png");
 
             case BLOCK_RAW_ZINC:
-                return loadTextureFromPath("D:/Respaldo/Voxel World/resourcepacks/Textures/Items/zinc crudo.png");
+                return loadTextureFromPath(getResourceRoot() + "/resourcepacks/Textures/Items/zinc crudo.png");
 
             case BLOCK_RAW_COPPER:
-                return loadTextureFromPath("D:/Respaldo/Voxel World/resourcepacks/Textures/Items/cobre crudo.png");
+                return loadTextureFromPath(getResourceRoot() + "/resourcepacks/Textures/Items/cobre crudo.png");
 
             default:
                 // Si no hay textura de item, usar la textura de bloque (cara superior)
@@ -10454,6 +10515,11 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
         }
     }
 
+    // Tecla F3 para overlay de rendimiento (Profiler)
+    if (key == GLFW_KEY_F3 && action == GLFW_PRESS) {
+        Profiler::toggle();
+    }
+
     // Tecla E para inventario
     if (key == GLFW_KEY_E && action == GLFW_PRESS && !g_gameState->isPaused) {
         g_gameState->inventoryOpen = !g_gameState->inventoryOpen;
@@ -14347,11 +14413,16 @@ void setupSignalHandlers() {
 // ============================================================================
 
 int main() {
+    // Redirigir stdout/stderr a archivo de log (el binario no tiene consola)
+    initLogging();
+
     // ⭐ INSTALAR SIGNAL HANDLERS PARA GUARDADO DE EMERGENCIA
     setupSignalHandlers();
 
     if (!glfwInit()) {
         std::cerr << "Error al inicializar GLFW" << std::endl;
+        MessageBoxA(nullptr, "No se pudo inicializar GLFW (sistema de ventanas).",
+                    "VoxelWorld - Error fatal", MB_OK | MB_ICONERROR);
         return -1;
     }
 
@@ -14362,6 +14433,8 @@ int main() {
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Voxel World - Sandbox Infinito", NULL, NULL);
     if (!window) {
         std::cerr << "Error al crear ventana GLFW" << std::endl;
+        MessageBoxA(nullptr, "No se pudo crear la ventana del juego (OpenGL 2.1 no disponible).",
+                    "VoxelWorld - Error fatal", MB_OK | MB_ICONERROR);
         glfwTerminate();
         return -1;
     }
@@ -14419,6 +14492,12 @@ int main() {
     initMainMenuButtons(g_gameState, width, height);
 
     glfwSetKeyCallback(window, keyCallback);
+
+    // Conectar el Profiler al font del juego (overlay con F3)
+    Profiler::ProfilerManager::getInstance()->setTextRenderer(
+        [](const char* text, float x, float y, float size) {
+            renderText(text, x, y, size);
+        });
     glfwSetCharCallback(window, charCallback);
     glfwSetCursorPosCallback(window, mouseCallback);
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
@@ -14622,7 +14701,7 @@ int main() {
         fpsTimer += deltaTime;
         if (fpsTimer >= 1.0) {
             char title[256];
-            sprintf(title, "VoxelWorld [60FPS] | FPS:%d | Phys:%.1fms Chunks:%.1fms Render:%.1fms | Pos:%.0f,%.0f,%.0f",
+            snprintf(title, sizeof(title), "VoxelWorld | FPS:%d | Phys:%.1fms Chunks:%.1fms Render:%.1fms | Pos:%.0f,%.0f,%.0f",
                     frameCount, physics_ms, chunks_ms, render_ms,
                     g_gameState->player.position.x,
                     g_gameState->player.position.y,
@@ -16228,6 +16307,22 @@ int main() {
 
         } // Fin de SCREEN_IN_GAME
 
+            // ⭐ Profiler (F3): alimentar métricas del frame y dibujar overlay
+            {
+                Profiler::FrameStats stats;
+                stats.fps = (deltaTime > 0.0f) ? (1.0f / deltaTime) : 0.0f;
+                stats.frameTimeMs = deltaTime * 1000.0f;
+                stats.cpuTimeMs = (float)(physics_ms + chunks_ms + render_ms);
+                if (g_gameState) {
+                    stats.totalChunks = g_gameState->world.getChunkCount();
+                }
+                Profiler::updateStats(stats);
+                Profiler::endFrame();
+                if (Profiler::isVisible()) {
+                    Profiler::ProfilerManager::getInstance()->renderOverlay(width, height);
+                }
+            }
+
             glfwSwapBuffers(window);
             glfwPollEvents();
         }
@@ -16249,10 +16344,13 @@ int main() {
             }
         }
 
-        std::cerr << "\n💡 Por favor reporta este error en GitHub:" << std::endl;
-        std::cerr << "   https://github.com/tu-repositorio/voxel-world/issues" << std::endl;
-        std::cerr << "\nPresiona Enter para cerrar..." << std::endl;
-        std::cin.get();
+        // Aviso visible: el binario no tiene consola, cerr solo llega al log
+        char msg[512];
+        snprintf(msg, sizeof(msg),
+                 "El juego encontró un error crítico y debe cerrarse.\n\n%s\n\n"
+                 "Se intentó guardar el mundo. Revisa el log en:\n"
+                 "%%LOCALAPPDATA%%\\VoxelGenesis\\log.txt", e.what());
+        MessageBoxA(nullptr, msg, "VoxelWorld - Error crítico", MB_OK | MB_ICONERROR);
     } catch (...) {
         std::cerr << "\n╔════════════════════════════════════════╗" << std::endl;
         std::cerr << "║  ❌ ERROR DESCONOCIDO CRÍTICO          ║" << std::endl;
@@ -16268,8 +16366,11 @@ int main() {
             }
         }
 
-        std::cerr << "\nPresiona Enter para cerrar..." << std::endl;
-        std::cin.get();
+        MessageBoxA(nullptr,
+                    "El juego encontró un error desconocido y debe cerrarse.\n\n"
+                    "Se intentó guardar el mundo. Revisa el log en:\n"
+                    "%LOCALAPPDATA%\\VoxelGenesis\\log.txt",
+                    "VoxelWorld - Error crítico", MB_OK | MB_ICONERROR);
     }
 
     // ⭐ GUARDAR MUNDO ANTES DE CERRAR (guardado normal)

@@ -111,6 +111,8 @@ private:
     std::chrono::high_resolution_clock::time_point lastUpdateTime_;
     float updateIntervalSec_ = 0.5f;  // Actualizar display cada 0.5s
 
+    void (*textRenderer_)(const char*, float, float, float) = nullptr;
+
     ProfilerManager();
 
 public:
@@ -139,6 +141,11 @@ public:
 
     // Render overlay
     void renderOverlay(int screenWidth, int screenHeight);
+
+    // Callback para dibujar texto con el font del juego (inyectado desde main.cpp,
+    // mismo patrón que MeshBuilder::setTextureCallback)
+    using TextRenderFn = void(*)(const char* text, float x, float y, float size);
+    void setTextRenderer(TextRenderFn fn) { textRenderer_ = fn; }
 
 private:
     void smoothStats(float alpha = 0.1f);  // Exponential smoothing

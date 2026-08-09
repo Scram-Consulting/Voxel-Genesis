@@ -245,12 +245,11 @@ void ProfilerManager::renderOverlay(int screenWidth, int screenHeight) {
 }
 
 void ProfilerManager::renderText(const std::string& text, int x, int y, int screenWidth, int screenHeight) {
-    // Texto simple usando GL_LINES (bitmap font estilo retro)
-    // Por ahora placeholder - integrar con tu sistema de renderText existente
+    (void)screenWidth; (void)screenHeight;
     glColor3f(1.0f, 1.0f, 1.0f);
-
-    // Esto se debe reemplazar con llamada a tu renderText() de main.cpp
-    // renderText(text.c_str(), x, y, screenWidth, screenHeight);
+    if (textRenderer_) {
+        textRenderer_(text.c_str(), (float)x, (float)y, 10.0f);
+    }
 }
 
 void ProfilerManager::renderGraph(const std::vector<float>& data, int x, int y, int width, int height,
