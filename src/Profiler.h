@@ -81,9 +81,14 @@ public:
     static void recordTiming(const char* name, float ms);
 };
 
-// Macro para profiling fácil
-#define PROFILE_SCOPE(name) Profiler::ScopedTimer _timer_##__LINE__(name)
-#define PROFILE_SCOPE_MS(name, target) Profiler::ScopedTimer _timer_##__LINE__(name, &target)
+// Macro para profiling fácil.
+// La doble indirección es necesaria: con un solo nivel, ##__LINE__ se pega
+// literalmente ("_timer___LINE__") en vez de expandirse al número de línea, y
+// dos PROFILE_SCOPE en el mismo ámbito colisionarían.
+#define PROFILER_CONCAT_INNER(a, b) a##b
+#define PROFILER_CONCAT(a, b) PROFILER_CONCAT_INNER(a, b)
+#define PROFILE_SCOPE(name) Profiler::ScopedTimer PROFILER_CONCAT(_timer_, __LINE__)(name)
+#define PROFILE_SCOPE_MS(name, target) Profiler::ScopedTimer PROFILER_CONCAT(_timer_, __LINE__)(name, &target)
 
 // ============================================================================
 // PROFILER MANAGER

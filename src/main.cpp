@@ -3608,6 +3608,7 @@ public:
 
     void generateChunk(Chunk* chunk) {
         if (chunk->isGenerated) return;
+        PROFILE_SCOPE("World::generateChunk");
 
         const int SEA_LEVEL = 64;
         const int BEDROCK_LAYER = 5;
@@ -5593,6 +5594,7 @@ public:
 
     // ⭐⭐⭐ Actualizar flujo de agua mejorado (procesarcola)
     void updateWaterFlow() {
+        PROFILE_SCOPE("World::updateWaterFlow");
         try {
             int updatesProcessed = 0;
 
@@ -5756,6 +5758,8 @@ public:
         if (!chunk->isUpdatingMesh.compare_exchange_strong(expected, true)) {
             return; // Ya se está procesando este chunk
         }
+
+        PROFILE_SCOPE("World::buildChunkMesh");
 
         // ⭐ OPTIMIZACIÓN: Early exit si el chunk está vacío
         bool hasBlocks = false;
@@ -6261,6 +6265,7 @@ public:
     }
 
     void updateChunks(const Vec3& playerPos, const Vec3& previousPos, float deltaTime = 0.016f) {
+        PROFILE_SCOPE("World::updateChunks");
         // ⭐⭐⭐ Actualizar tiempo de frame para cache LRU
         currentFrameTime++;
 
@@ -6642,6 +6647,7 @@ public:
     }
 
     void render(const Vec3& playerPos = Vec3(0, 0, 0)) {
+        PROFILE_SCOPE("World::render");
         // Asegurar estados de OpenGL correctos
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
@@ -14177,7 +14183,22 @@ void setupSignalHandlers() {
 // FUNCION MAIN
 // ============================================================================
 
-int main() {
+// Modo benchmark: ver la sección "MODO BENCHMARK" más abajo
+static bool g_benchmarkMode = false;
+static double g_benchmarkSeconds = 30.0;
+static double g_benchInGameStart = -1.0;
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--benchmark") {
+            g_benchmarkMode = true;
+            if (i + 1 < argc) {
+                try { g_benchmarkSeconds = std::stod(argv[++i]); } catch (...) {}
+            }
+        }
+    }
+
     // Redirigir stdout/stderr a archivo de log (el binario no tiene consola)
     initLogging();
 
@@ -14292,6 +14313,7 @@ int main() {
     glClearDepth(1.0);
 
     // Generar chunks iniciales alrededor del origen (0,0,0)
+    double initGenStart = glfwGetTime();
     std::cout << "Generando mundo inicial alrededor del origen..." << std::endl;
 
     // ⭐ MEJORADO: Pasar ventana para procesar mensajes de Windows (evita "No responde")
@@ -14304,7 +14326,25 @@ int main() {
     // Marcar que la generación inicial ha terminado (activa rebuilds inmediatos)
     g_gameState->world.finishInitialGeneration();
 
-    std::cout << "Sistema de mundo inicializado! (" << g_gameState->world.getChunkCount() << " chunks)" << std::endl;
+    std::cout << "Sistema de mundo inicializado! (" << g_gameState->world.getChunkCount()
+              << " chunks en " << (glfwGetTime() - initGenStart) << "s)" << std::endl;
+
+    // ⭐ MODO BENCHMARK: entra directo a un mundo y sale solo tras N segundos.
+    // Permite medir el rendimiento real del juego (no el del menú) de forma
+    // repetible, sin depender de que alguien navegue los menús a mano.
+    if (g_benchmarkMode) {
+        scanSavedWorlds(g_gameState);
+        float now = (float)glfwGetTime();
+        if (!g_gameState->savedWorlds.empty()) {
+            std::cout << "[BENCH] Cargando mundo existente: "
+                      << g_gameState->savedWorlds[0].name << std::endl;
+            loadWorld(g_gameState, 0, now);
+        } else {
+            std::cout << "[BENCH] Creando mundo nuevo" << std::endl;
+            createNewWorld(g_gameState, now);
+        }
+        std::cout << "[BENCH] Duracion: " << g_benchmarkSeconds << "s" << std::endl;
+    }
 
     /* COMENTADO: El spawn ahora se hace al crear/cargar mundo, no al inicio
     // SISTEMA DE SPAWN SEGURO - El jugador SIEMPRE aparece en superficie
@@ -14406,7 +14446,7 @@ int main() {
 
     double lastTime = glfwGetTime();
     int frameCount = 0;
-    double fpsTimer = 0;
+    double fpsWindowStart = lastTime;
 
     // ⭐ PROTECCIÓN CONTRA CRASHES: Try-catch en el game loop
     try {
@@ -14415,6 +14455,21 @@ int main() {
             if (!g_gameState) {
                 std::cerr << "❌ ERROR CRÍTICO: g_gameState es NULL en el bucle principal!" << std::endl;
                 break;
+            }
+
+            // El cronómetro del benchmark arranca al entrar en juego: así no se
+            // contamina con el tiempo de generación inicial del mundo.
+            if (g_benchmarkMode) {
+                if (g_benchInGameStart < 0.0) {
+                    if (g_gameState->screenState == SCREEN_IN_GAME) {
+                        g_benchInGameStart = glfwGetTime();
+                        std::cout << "[BENCH] En juego tras " << g_benchInGameStart
+                                  << "s de arranque; midiendo " << g_benchmarkSeconds << "s" << std::endl;
+                    }
+                } else if (glfwGetTime() - g_benchInGameStart >= g_benchmarkSeconds) {
+                    std::cout << "[BENCH] Fin del benchmark, cerrando" << std::endl;
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                }
             }
 
             // ⭐⭐⭐ NUEVO: Protección para TextureManager (asegurar que nunca sea null)
@@ -14463,17 +14518,40 @@ int main() {
             }
 
         frameCount++;
-        fpsTimer += deltaTime;
-        if (fpsTimer >= 1.0) {
+        // ⭐ Ventana de FPS medida con reloj real, NO con deltaTime: deltaTime
+        // está clampeado a 100 ms arriba, así que al ir el juego por debajo de
+        // 10 FPS el contador avanzaba más lento que el tiempo real y el FPS
+        // mostrado quedaba inflado justo cuando peor iba.
+        if (currentTime - fpsWindowStart >= 1.0) {
+            double elapsed = currentTime - fpsWindowStart;
+            double fps = frameCount / elapsed;
+
             char title[256];
-            snprintf(title, sizeof(title), "VoxelWorld | FPS:%d | Phys:%.1fms Chunks:%.1fms Render:%.1fms | Pos:%.0f,%.0f,%.0f",
-                    frameCount, physics_ms, chunks_ms, render_ms,
+            snprintf(title, sizeof(title), "VoxelWorld | FPS:%.1f | Phys:%.1fms Chunks:%.1fms Render:%.1fms | Pos:%.0f,%.0f,%.0f",
+                    fps, physics_ms, chunks_ms, render_ms,
                     g_gameState->player.position.x,
                     g_gameState->player.position.y,
                     g_gameState->player.position.z);
             glfwSetWindowTitle(window, title);
+
+            // ⭐ Volcado periódico de perfilado al log: la ventana no siempre
+            // se puede observar (y F3 requiere estar delante), así que las
+            // decisiones de optimización se toman sobre estos números.
+            static int perfDumpCounter = 0;
+            if (++perfDumpCounter % 5 == 0) {
+                auto top = Profiler::ProfilerManager::getInstance()->getTopFunctions(8);
+                std::cout << "[PERF] t=" << (int)currentTime << "s fps=" << fps
+                          << " frame=" << (1000.0 / (fps > 0 ? fps : 1)) << "ms"
+                          << " chunks=" << g_gameState->world.getChunkCount()
+                          << " screen=" << (int)g_gameState->screenState;
+                for (const auto& [name, ms] : top) {
+                    std::cout << " | " << name << "=" << ms << "ms";
+                }
+                std::cout << std::endl;
+            }
+
             frameCount = 0;
-            fpsTimer = 0;
+            fpsWindowStart = currentTime;
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
