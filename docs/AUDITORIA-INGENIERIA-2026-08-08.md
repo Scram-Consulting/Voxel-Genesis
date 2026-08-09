@@ -1,5 +1,25 @@
 # Auditoría de Ingeniería de Software: VoxelGenesis
 
+> **Estado de ejecución (actualizado 2026-08-09).** Las fases 0 a 4 del plan de
+> acción ya están aplicadas; ver `git log` para el detalle. Los hallazgos y
+> puntuaciones de abajo describen el estado **en el momento de la auditoría**, no
+> el actual, y se conservan como línea base para medir el progreso.
+>
+> | Fase | Estado | Commit |
+> |---|---|---|
+> | 0 — Red de seguridad (git, build reproducible) | ✅ Hecha | `1bc0674`, `beeecfe` |
+> | 1 — Visibilidad (logs, diálogos, rutas, profiler) | ✅ Hecha | `143a255` |
+> | 2 — Integridad de datos (C1–C5) | ✅ Hecha | `dea3120` |
+> | 3 — Tests de caracterización | ✅ Hecha | `2922b3c` |
+> | 4 — Limpieza (código muerto, docs) | ✅ Hecha | `87b9372`, `249829e` |
+> | 5 — Rendimiento real (threading, greedy meshing) | ⬜ Pendiente | — |
+> | 6 — Desmonte del monolito | ⬜ Iniciada parcialmente | `2922b3c` |
+>
+> Notas sobre lo pendiente: la Fase 5 es la que queda con más impacto (la
+> iluminación sigue desactivada y todo el trabajo pesado corre en el hilo
+> principal). De la Fase 6 solo se extrajeron `BlockType.h`, `Inventory.h` y
+> `WorldName.h`; `main.cpp` sigue en ~16.200 líneas.
+
 **Fecha:** 2026-08-08
 **Alcance:** proyecto completo en `C:\VoxelGenesis` (motor de vóxeles tipo Minecraft, C++20, OpenGL fixed-function + VBO, GLFW 3.4, solo Windows, ~26.000 líneas).
 **Método:** auditoría de solo lectura con 4 análisis paralelos (arquitectura/SOLID, rendimiento/escalabilidad, seguridad/errores, testing/observabilidad/CI/docs), checklist de la skill `software-engineering` adaptado al dominio (juego de escritorio offline sin red: auth/HTTPS/CORS/rate-limiting/tracing distribuido = **N/A**, re-ponderados; la superficie de seguridad relevante es deserialización de saves, rutas de archivos y robustez ante datos corruptos).
