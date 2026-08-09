@@ -118,11 +118,12 @@ abordó y lo que queda:
   silencio (formato de guardado en v2, con lectura de saves v1)
 - ✅ Suite de tests sobre la lógica crítica
 - ✅ Eliminadas ~7000 líneas de código muerto
-- 🔶 Rendimiento: corregida una cascada recursiva de generación de chunks que
-  hundía el juego a 1,7 FPS al explorar (ahora ~24 FPS mientras carga, 60 en
-  reposo). Falta mover la generación a hilos de trabajo para eliminar del todo
-  el tirón: `generateChunk` cuesta ~65 ms y corre en el hilo principal.
-  La iluminación sigue desactivada desde un intento previo de subir FPS.
+- 🔶 Rendimiento: de 1,7 FPS al explorar a 60 FPS la mayor parte del tiempo
+  (bajadas puntuales a ~29 en las ráfagas de carga más pesadas). Se corrigió una
+  cascada recursiva de generación de chunks y se eliminó trabajo redundante:
+  la generación pasó de 122 a 83 ms/chunk. Falta moverla a hilos de trabajo
+  para quitar el tirón por completo, y reactivar la iluminación (desactivada
+  desde un intento previo de subir FPS).
 - ⬜ Arquitectura: `main.cpp` sigue siendo un monolito con una clase `World` que
   concentra demasiadas responsabilidades
 
