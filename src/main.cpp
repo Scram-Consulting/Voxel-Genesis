@@ -7162,7 +7162,7 @@ public:
                 g_textureManager->bindOptimized(batch->texture);
 
                 // ⭐ PROTECCIÓN: Verificar funciones VBO antes de usar
-                if (!glBindBuffer || !glVertexPointer) continue;
+                if (!glBindBuffer) continue;  // glVertexPointer es estática (GL 1.1), no necesita chequeo
 
                 // Bind VBOs para este batch
                 glBindBuffer(GL_ARRAY_BUFFER, batch->vbo);
@@ -7217,7 +7217,8 @@ public:
                 glMatrixMode(GL_MODELVIEW);
 
                 // ⭐ PROTECCIÓN: Verificar funciones VBO antes de usar
-                if (!glBindBuffer || !glVertexPointer) {
+                // (glVertexPointer es estática de GL 1.1, no necesita chequeo)
+                if (!glBindBuffer) {
                     glMatrixMode(GL_TEXTURE);
                     glPopMatrix();
                     glMatrixMode(GL_MODELVIEW);
